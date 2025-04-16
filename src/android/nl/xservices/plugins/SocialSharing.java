@@ -136,73 +136,68 @@ public class SocialSharing extends CordovaPlugin {
     final SocialSharing plugin = this;
     cordova.getThreadPool().execute(new SocialSharingRunnable(callbackContext) {
       public void run() {
-        Intent draft = new Intent(Intent.ACTION_SENDTO);
+        Intent emailIntent = new Intent(Intent.ACTION_SEND_MULTIPLE);
+        emailIntent.setType("message/rfc822"); // Specific for email
+        emailIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        emailIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        if (notEmpty(subject)) {
+          emailIntent.putExtra(Intent.EXTRA_SUBJECT, subject);
+        }
+
         if (notEmpty(message)) {
           Pattern htmlPattern = Pattern.compile(".*\\<[^>]+>.*", Pattern.DOTALL);
           if (htmlPattern.matcher(message).matches()) {
-            draft.putExtra(android.content.Intent.EXTRA_TEXT, Html.fromHtml(message));
-            draft.setType("text/html");
+            emailIntent.putExtra(Intent.EXTRA_TEXT, Html.fromHtml(message, Html.FROM_HTML_MODE_LEGACY));
           } else {
-            draft.putExtra(android.content.Intent.EXTRA_TEXT, message);
-            draft.setType("text/plain");
+            emailIntent.putExtra(Intent.EXTRA_TEXT, message);
           }
         }
-        if (notEmpty(subject)) {
-          draft.putExtra(android.content.Intent.EXTRA_SUBJECT, subject);
-        }
+
         try {
           if (to != null && to.length() > 0) {
-            draft.putExtra(android.content.Intent.EXTRA_EMAIL, toStringArray(to));
+            emailIntent.putExtra(Intent.EXTRA_EMAIL, toStringArray(to));
           }
           if (cc != null && cc.length() > 0) {
-            draft.putExtra(android.content.Intent.EXTRA_CC, toStringArray(cc));
+            emailIntent.putExtra(Intent.EXTRA_CC, toStringArray(cc));
           }
           if (bcc != null && bcc.length() > 0) {
-            draft.putExtra(android.content.Intent.EXTRA_BCC, toStringArray(bcc));
+            emailIntent.putExtra(Intent.EXTRA_BCC, toStringArray(bcc));
           }
-          if (files.length() > 0) {
+
+//           Attachments
+          if (files != null && files.length() > 0) {
             final String dir = getDownloadDir();
             if (dir != null) {
-              ArrayList<Uri> fileUris = new ArrayList<Uri>();
+              ArrayList<Uri> fileUris = new ArrayList<>();
               for (int i = 0; i < files.length(); i++) {
-                Uri fileUri = getFileUriAndSetType(draft, dir, files.getString(i), subject, i);
-                fileUri = FileProvider.getUriForFile(webView.getContext(), cordova.getActivity().getPackageName()+".sharing.provider", new File(fileUri.getPath()));
+                Uri fileUri = getFileUriAndSetType(emailIntent, dir, files.getString(i), subject, i);
                 if (fileUri != null) {
+                  fileUri = FileProvider.getUriForFile(
+                    webView.getContext(),
+                    cordova.getActivity().getPackageName() + ".sharing.provider",
+                    new File(fileUri.getPath())
+                  );
                   fileUris.add(fileUri);
                 }
               }
               if (!fileUris.isEmpty()) {
-                draft.putExtra(Intent.EXTRA_STREAM, fileUris);
+                emailIntent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, fileUris);
               }
             }
           }
         } catch (Exception e) {
-          callbackContext.error(e.getMessage());
+          callbackContext.error("An error occurred while processing the attachments: " + e.getMessage());
           return;
         }
 
-        // this was added to start the intent in a new window as suggested in #300 to prevent crashes upon return
-        draft.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-        draft.setData(Uri.parse("mailto:"));
-
-        List<ResolveInfo> emailAppList = cordova.getActivity().getPackageManager().queryIntentActivities(draft, 0);
-
-        List<LabeledIntent> labeledIntentList = new ArrayList();
-        for (ResolveInfo info : emailAppList) {
-          draft.setAction(Intent.ACTION_SEND_MULTIPLE);
-          draft.setType("application/octet-stream");
-
-          draft.setComponent(new ComponentName(info.activityInfo.packageName, info.activityInfo.name));
-          labeledIntentList.add(new LabeledIntent(draft, info.activityInfo.packageName, info.loadLabel(cordova.getActivity().getPackageManager()), info.icon));
-        }
-        final Intent emailAppLists = Intent.createChooser(labeledIntentList.remove(labeledIntentList.size() - 1), "Choose Email App");
-        emailAppLists.putExtra(Intent.EXTRA_INITIAL_INTENTS, labeledIntentList.toArray(new LabeledIntent[labeledIntentList.size()]));
-
-        // as an experiment for #300 we're explicitly running it on the ui thread here
-        cordova.getActivity().runOnUiThread(new Runnable() {
-          public void run() {
-            cordova.startActivityForResult(plugin, emailAppLists, ACTIVITY_CODE_SENDVIAEMAIL);
+        // Start email chooser pe UI thread
+        cordova.getActivity().runOnUiThread(() -> {
+          try {
+            Intent chooser = Intent.createChooser(emailIntent, "Send email...");
+            cordova.startActivityForResult(plugin, chooser, ACTIVITY_CODE_SENDVIAEMAIL);
+          } catch (ActivityNotFoundException e) {
+            callbackContext.error("There is no email app available to send this message.");
           }
         });
       }
